@@ -50,12 +50,18 @@
     <MakeDir Directories="$(OeadBuildDir)" Condition="!Exists('$(OeadBuildDir)')" />
 
     <!-- Linux Build (Static, for self-contained library) -->
-    <Exec Command="cmake .. -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 &amp;&amp; cmake --build ." 
+    <Exec Command="cmake .. -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5" 
+          WorkingDirectory="$(OeadBuildDir)" 
+          Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))" />
+    <Exec Command="cmake --build ." 
           WorkingDirectory="$(OeadBuildDir)" 
           Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))" />
 
     <!-- Windows Build (Standard DLL, config-aware) -->
-    <Exec Command="cmake .. &amp;&amp; cmake --build . --config Release" 
+    <Exec Command="cmake .." 
+          WorkingDirectory="$(OeadBuildDir)" 
+          Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))" />
+    <Exec Command="cmake --build . --config Release" 
           WorkingDirectory="$(OeadBuildDir)" 
           Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))" />
 
