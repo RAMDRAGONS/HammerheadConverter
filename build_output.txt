@@ -1,0 +1,16 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  ShaderLibrary -> /home/judas/Documents/Hammerhead/ShaderLibrary/ShaderLibrary/bin/Debug/net6.0/ShaderLibrary.dll
+  LayoutLibrary -> /home/judas/Documents/Hammerhead/LayoutLibrary/LayoutLibrary/bin/Debug/net8.0/LayoutLibrary.dll
+  Ryujinx.Common -> /home/judas/Documents/Hammerhead/ryujinx/src/Ryujinx.Common/bin/Debug/net10.0/Ryujinx.Common.dll
+  WoomLink -> /home/judas/Documents/Hammerhead/WoomLink/WoomLink/bin/Debug/net8.0/WoomLink.dll
+  Spv.Generator -> /home/judas/Documents/Hammerhead/ryujinx/src/Spv.Generator/bin/Debug/net10.0/Spv.Generator.dll
+  Ryujinx.Graphics.Shader -> /home/judas/Documents/Hammerhead/ryujinx/src/Ryujinx.Graphics.Shader/bin/Debug/net10.0/Ryujinx.Graphics.Shader.dll
+  BfresLibrary -> /home/judas/Documents/Hammerhead/BfresLibrary/BfresLibrary/bin/Debug/netstandard2.0/BfresLibrary.dll
+  HammerheadConverter -> /home/judas/Documents/Hammerhead/HammerheadConverter/bin/Debug/net10.0/HammerheadConverter.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:01.23

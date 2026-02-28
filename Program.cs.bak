@@ -1,0 +1,145 @@
+using ShaderLibrary;
+using BfresLibrary;
+
+namespace HammerheadConverter;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (args.Length == 0 || args.Contains("--help"))
+        {
+            PrintUsage();
+            return 0;
+        }
+
+        string prodBfshaPath = null;
+        string prodBfresPath = null;
+        string testfireBfshaPath = null;
+        string testfireBfresPath = null;
+        string outputDir = null;
+
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            switch (args[i])
+            {
+                case "--prod-bfsha":
+                    prodBfshaPath = args[++i];
+                    break;
+                case "--prod-bfres":
+                    prodBfresPath = args[++i];
+                    break;
+                case "--testfire-bfsha":
+                    testfireBfshaPath = args[++i];
+                    break;
+                case "--testfire-bfres":
+                    testfireBfresPath = args[++i];
+                    break;
+                case "--output-dir":
+                    outputDir = args[++i];
+                    break;
+            }
+        }
+
+        // Validate inputs
+        var errors = new List<string>();
+        if (prodBfshaPath == null) errors.Add("--prod-bfsha is required");
+        if (testfireBfshaPath == null) errors.Add("--testfire-bfsha is required");
+        if (outputDir == null) errors.Add("--output-dir is required");
+
+        if (errors.Count > 0)
+        {
+            foreach (var err in errors)
+                Console.Error.WriteLine($"ERROR: {err}");
+            PrintUsage();
+            return 1;
+        }
+
+        // Ensure output directory exists
+        Directory.CreateDirectory(outputDir);
+
+        try
+        {
+            // === BFSHA Conversion ===
+            Console.WriteLine($"Loading prod bfsha: {prodBfshaPath}");
+            var prodBfsha = new BfshaFile(prodBfshaPath);
+            Console.WriteLine($"Loading testfire bfsha: {testfireBfshaPath}");
+            var testfireBfsha = new BfshaFile(testfireBfshaPath);
+
+            var convertedBfsha = BfshaConverter.Convert(prodBfsha, testfireBfsha);
+
+            string outputBfshaPath = Path.Combine(outputDir, Path.GetFileName(prodBfshaPath));
+            convertedBfsha.Save(outputBfshaPath);
+            Console.WriteLine($"\nSaved converted bfsha: {outputBfshaPath}");
+
+            // Verify: reload and check
+            Console.WriteLine("Verifying bfsha...");
+            var reloaded = new BfshaFile(outputBfshaPath);
+            Console.WriteLine($"  ✓ Reloaded OK: {reloaded.ShaderModels.Count} shader models, " +
+                $"version Major={reloaded.BinHeader.VersionMajor}");
+
+            // === BFRES Conversion (optional) ===
+            if (prodBfresPath != null && testfireBfresPath != null)
+            {
+                Console.WriteLine($"\nLoading prod bfres: {prodBfresPath}");
+                var prodBfres = new ResFile(prodBfresPath);
+                Console.WriteLine($"Loading testfire bfres: {testfireBfresPath}");
+                var testfireBfres = new ResFile(testfireBfresPath);
+
+                var convertedBfres = BfresConverter.Convert(prodBfres, testfireBfres);
+
+                string outputBfresPath = Path.Combine(outputDir, Path.GetFileName(prodBfresPath));
+                convertedBfres.Save(outputBfresPath);
+                Console.WriteLine($"\nSaved converted bfres: {outputBfresPath}");
+
+                // Verify: reload and check
+                Console.WriteLine("Verifying bfres...");
+                var reloadedBfres = new ResFile(outputBfresPath);
+                Console.WriteLine($"  ✓ Reloaded OK: {reloadedBfres.Models.Count} models, " +
+                    $"Major2={reloadedBfres.VersionMajor2}");
+            }
+            else if (prodBfresPath != null || testfireBfresPath != null)
+            {
+                Console.WriteLine("\nWARNING: Both --prod-bfres and --testfire-bfres required for bfres conversion. Skipping.");
+            }
+
+            Console.WriteLine("\n=== Conversion complete ===");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\nERROR: {ex.Message}");
+            Console.Error.WriteLine(ex.StackTrace);
+            return 2;
+        }
+    }
+
+    static void PrintUsage()
+    {
+        Console.WriteLine(@"
+HammerheadConverter — Bfsha/Bfres Prod-to-Testfire Converter
+
+Usage:
+  HammerheadConverter [options]
+
+Required options:
+  --prod-bfsha <path>      Path to the prod bfsha file
+  --testfire-bfsha <path>  Path to the testfire bfsha template file
+  --output-dir <path>      Directory to write converted files
+
+Optional:
+  --prod-bfres <path>      Path to the prod bfres file
+  --testfire-bfres <path>  Path to the testfire bfres template file
+
+  Both --prod-bfres and --testfire-bfres must be specified for bfres conversion.
+
+Example:
+  HammerheadConverter \
+    --prod-bfsha Fld_Ditch01-prod/Blitz_UBER.Nin_NX_NVN.bfsha \
+    --prod-bfres Fld_Ditch01-prod/output.bfres \
+    --testfire-bfsha Fld_Ditch01-testfire/Blitz_UBER.Nin_NX_NVN.bfsha \
+    --testfire-bfres Fld_Ditch01-testfire/output.bfres \
+    --output-dir Fld_Ditch01-converted
+");
+    }
+}

@@ -1,0 +1,15 @@
+[submodule "include/BfresLibrary"]
+	path = include/BfresLibrary
+	url = https://github.com/RAMDRAGONS/BfresLibrary.git
+[submodule "include/oead"]
+	path = include/oead
+	url = https://github.com/RAMDRAGONS/oead
+[submodule "include/ShaderLibrary"]
+	path = include/ShaderLibrary
+	url = https://github.com/RAMDRAGONS/ShaderLibrary
+[submodule "include/WoomLink"]
+	path = include/WoomLink
+	url = https://github.com/RAMDRAGONS/WoomLink
+[submodule "include/LayoutLibrary"]
+	path = include/LayoutLibrary
+	url = https://github.com/KillzXGaming/LayoutLibrary.git
