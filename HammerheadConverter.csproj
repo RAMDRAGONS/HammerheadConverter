@@ -58,7 +58,7 @@
           Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))" />
 
     <!-- Windows Build (Standard DLL, config-aware) -->
-    <Exec Command="cmake .." 
+    <Exec Command="cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5" 
           WorkingDirectory="$(OeadBuildDir)" 
           Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))" />
     <Exec Command="cmake --build . --config Release" 
