@@ -35,4 +35,39 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="oead_capi.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="liboead_capi.so" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Native oead Build Automation -->
+  <Target Name="BuildOead" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <OeadSrcDir>include/oead</OeadSrcDir>
+      <OeadBuildDir>$(OeadSrcDir)/build_auto</OeadBuildDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(OeadBuildDir)" Condition="!Exists('$(OeadBuildDir)')" />
+
+    <!-- Linux Build (Static, for self-contained library) -->
+    <Exec Command="cmake .. -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 &amp;&amp; cmake --build ." 
+          WorkingDirectory="$(OeadBuildDir)" 
+          Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))" />
+
+    <!-- Windows Build (Standard DLL, config-aware) -->
+    <Exec Command="cmake .. &amp;&amp; cmake --build . --config Release" 
+          WorkingDirectory="$(OeadBuildDir)" 
+          Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))" />
+
+    <!-- Copy resulting binary to the target directory where the EXE is produced -->
+    <!-- Handles both single-config (Linux) and multi-config (Windows/VS) paths -->
+    <Copy SourceFiles="$(OeadBuildDir)/liboead_capi.so" DestinationFolder="$(OutDir)" Condition="Exists('$(OeadBuildDir)/liboead_capi.so')" />
+    <Copy SourceFiles="$(OeadBuildDir)/oead_capi.dll" DestinationFolder="$(OutDir)" Condition="Exists('$(OeadBuildDir)/oead_capi.dll')" />
+    <Copy SourceFiles="$(OeadBuildDir)/Release/oead_capi.dll" DestinationFolder="$(OutDir)" Condition="Exists('$(OeadBuildDir)/Release/oead_capi.dll')" />
+    
+    <!-- Also copy to project root for visibility/caching if desired, though $(OutDir) is what matters for runtime -->
+    <Copy SourceFiles="$(OeadBuildDir)/liboead_capi.so" DestinationFolder="." Condition="Exists('$(OeadBuildDir)/liboead_capi.so')" />
+    <Copy SourceFiles="$(OeadBuildDir)/Release/oead_capi.dll" DestinationFolder="." Condition="Exists('$(OeadBuildDir)/Release/oead_capi.dll')" />
+  </Target>
+
 </Project>
