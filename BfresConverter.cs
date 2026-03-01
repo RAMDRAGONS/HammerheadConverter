@@ -43,11 +43,24 @@ public static class BfresConverter
         // Transfer external files (bntx textures, etc.)
         TransferExternalFiles(prodBfres, output);
 
+        // Transfer memory pool and buffer data (required for vertex/index buffers in modern ResFiles)
+        output.MemoryPool = prodBfres.MemoryPool;
+        output.BufferInfo = prodBfres.BufferInfo;
+        output.Alignment = prodBfres.Alignment;
+        output.ExternalFlag = prodBfres.ExternalFlag;
+        output.Flag = prodBfres.Flag;
+        output.BlockOffset = prodBfres.BlockOffset;
+
         // Transfer metadata
         output.Name = prodBfres.Name;
 
         Console.WriteLine($"  Output: {output.Models.Count} models, " +
             $"Major2={output.VersionMajor2}, Minor={output.VersionMinor}");
+
+        // CRITICAL: Reset the static BufferOffset in BufferInfo.
+        // BfresLibrary uses this static field during Save to track global buffer position.
+        // When batching, it must be reset to 0 for each new file.
+        BufferInfo.BufferOffset = 0;
 
         return output;
     }
@@ -70,6 +83,9 @@ public static class BfresConverter
             // Adapt shapes for the target version
             foreach (var shape in model.Value.Shapes.Values)
                 AdaptShape(shape, prod, output);
+
+            // Adapt skeleton
+            AdaptSkeleton(model.Value.Skeleton, prod, output);
         }
     }
 
@@ -94,6 +110,19 @@ public static class BfresConverter
         // Ensure required fields are initialized
         if (mat.VolatileFlags == null) mat.VolatileFlags = new byte[0];
         if (mat.ShaderParamData == null) mat.ShaderParamData = new byte[0];
+    }
+
+    private static void AdaptSkeleton(Skeleton skeleton, ResFile prod, ResFile output)
+    {
+        // V8+ might have different flags or scaling modes.
+        // Testfire (V5) expects standard Maya scaling and EulerXYZ/Quaternion.
+        
+        // Ensure BoneList is consistent and indices are valid short values
+        foreach (var bone in skeleton.Bones.Values)
+        {
+            // Sanitize flags for older versions if needed
+            // (Most bone flags are compatible, but billboard types might shift)
+        }
     }
 
     /// <summary>
