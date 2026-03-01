@@ -1,3 +1,4 @@
+using System.IO;
 using ShaderLibrary;
 using BfresLibrary;
 using LayoutLibrary;
@@ -715,6 +716,11 @@ class Program
                         var prodBfres = new ResFile(new MemoryStream(entry.Value));
                         var refBfresLocal = new ResFile(new MemoryStream(refBfresEntry.Value));
                         convertedBfres = BfresConverter.Convert(prodBfres, refBfresLocal);
+
+                        if (szsName.StartsWith("Fld_Deli_", StringComparison.OrdinalIgnoreCase))
+                        {
+                            HandleDeliTextures(convertedBfres, inputDir);
+                        }
 
                         // NOTE: With the shader transplant approach, we use the prod bfsha
                         // (which contains programs compiled for prod option combinations).
@@ -2546,5 +2552,66 @@ Examples:
 
         Console.WriteLine($"Shaders written to {outputDir}");
         return 0;
+    }
+
+    private static void HandleDeliTextures(ResFile convertedBfres, string inputDir)
+    {
+        string deliTexturesPath = Path.Combine(inputDir, "DeliTextures.Nin_NX_NVN.szs");
+        if (!File.Exists(deliTexturesPath))
+        {
+            // Try one level up if not found in inputDir
+            deliTexturesPath = Path.Combine(Path.GetDirectoryName(inputDir) ?? ".", "DeliTextures.Nin_NX_NVN.szs");
+        }
+
+        if (File.Exists(deliTexturesPath))
+        {
+            Console.WriteLine($"  [Deli] Loading textures from: {deliTexturesPath}");
+            try
+            {
+                byte[] deliDecompressed = Oead.Yaz0DecompressFile(deliTexturesPath);
+                var deliSarcFiles = Oead.SarcRead(deliDecompressed);
+                var deliBfresEntry = deliSarcFiles.FirstOrDefault(f => Path.GetExtension(f.Key).Equals(".bfres", StringComparison.OrdinalIgnoreCase));
+                
+                if (deliBfresEntry.Value != null)
+                {
+                    var deliBfres = new ResFile(new MemoryStream(deliBfresEntry.Value));
+                    
+                    // Transfer Textures
+                    int addedTex = 0;
+                    foreach (var tex in deliBfres.Textures.Values)
+                    {
+                        if (!convertedBfres.Textures.ContainsKey(tex.Name))
+                        {
+                            convertedBfres.Textures.Add(tex.Name, tex);
+                            addedTex++;
+                        }
+                    }
+
+                    // Transfer ExternalFiles (crucial for BNTX data)
+                    int addedExt = 0;
+                    foreach (var ext in deliBfres.ExternalFiles)
+                    {
+                        if (!convertedBfres.ExternalFiles.ContainsKey(ext.Key))
+                        {
+                            convertedBfres.ExternalFiles.Add(ext.Key, ext.Value);
+                            addedExt++;
+                        }
+                    }
+                    Console.WriteLine($"    [Deli] Added {addedTex} textures and {addedExt} external files from DeliTextures.szs");
+                }
+                else
+                {
+                    Console.WriteLine("    [Deli] WARNING: DeliTextures.szs contains no .bfres file");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    [Deli] ERROR: Failed to load DeliTextures: {ex.Message}");
+            }
+        }
+        else
+        {
+            Console.WriteLine("  [Deli] WARNING: DeliTextures.Nin_NX_NVN.szs not found");
+        }
     }
 }

@@ -34,6 +34,20 @@ public static class BfresConverter
         // The testfire's version fields ensure the saver writes the correct layout.
         ResFile output = testfireBfres;
 
+        // Clear all dictionaries in the template to prevent reference assets from leaking
+        output.Models.Clear();
+        output.Textures.Clear();
+        output.ExternalFiles.Clear();
+        output.SkeletalAnims.Clear();
+        output.ShaderParamAnims.Clear();
+        output.ColorAnims.Clear();
+        output.TexSrtAnims.Clear();
+        output.TexPatternAnims.Clear();
+        output.BoneVisibilityAnims.Clear();
+        output.MatVisibilityAnims.Clear();
+        output.ShapeAnims.Clear();
+        output.SceneAnims.Clear();
+
         // Transfer models from prod to testfire structure
         TransferModels(prodBfres, output);
 
