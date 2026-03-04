@@ -236,6 +236,58 @@ class Program
             return 0;
         }
 
+        if (args.Contains("--dump-material"))
+        {
+            // Usage: --dump-material file1.szs file2.szs [materialName]
+            var rest = args.Where(a => !a.StartsWith("--")).ToArray();
+            if (rest.Length < 2) { Console.Error.WriteLine("Usage: --dump-material file1.szs file2.szs [materialName]"); return 1; }
+            string filterMat = rest.Length > 2 ? rest[2] : null;
+
+            var files = new[] { rest[0], rest[1] };
+            var allOpts = new Dictionary<string, Dictionary<string, string>>[2];
+
+            for (int fi = 0; fi < 2; fi++)
+            {
+                allOpts[fi] = new Dictionary<string, Dictionary<string, string>>();
+                byte[] dec = Oead.Yaz0DecompressFile(files[fi]);
+                var sarc = Oead.SarcRead(dec);
+                foreach (var entry in sarc.Where(e => Path.GetExtension(e.Key).Equals(".bfres", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var bfres = new ResFile(new MemoryStream(entry.Value));
+                    foreach (var model in bfres.Models.Values)
+                        foreach (var mat in model.Materials.Values)
+                        {
+                            if (filterMat != null && !mat.Name.Contains(filterMat, StringComparison.OrdinalIgnoreCase)) continue;
+                            var opts = new Dictionary<string, string>();
+                            if (mat.ShaderAssign?.ShaderOptions != null)
+                                foreach (var o in mat.ShaderAssign.ShaderOptions) opts[o.Key] = o.Value;
+                            allOpts[fi][mat.Name] = opts;
+                        }
+                }
+            }
+
+            var allNames = allOpts[0].Keys.Union(allOpts[1].Keys).OrderBy(n => n);
+            foreach (var name in allNames)
+            {
+                var has0 = allOpts[0].TryGetValue(name, out var opts0);
+                var has1 = allOpts[1].TryGetValue(name, out var opts1);
+                Console.WriteLine($"\n=== {name} ===");
+                if (!has0) { Console.WriteLine("  [MISSING in file1]"); continue; }
+                if (!has1) { Console.WriteLine("  [MISSING in file2]"); continue; }
+
+                var allKeys = opts0.Keys.Union(opts1.Keys).OrderBy(k => k);
+                int diffs = 0;
+                foreach (var key in allKeys)
+                {
+                    var v0 = opts0.TryGetValue(key, out var val0) ? val0 : "(absent)";
+                    var v1 = opts1.TryGetValue(key, out var val1) ? val1 : "(absent)";
+                    if (v0 != v1) { Console.WriteLine($"  DIFF {key}: {v0} → {v1}"); diffs++; }
+                }
+                if (diffs == 0) Console.WriteLine("  (identical)");
+            }
+            return 0;
+        }
+
         if (args.Contains("--mat-diag"))
         {
             string szsPath = args.FirstOrDefault(a => a.EndsWith(".szs") && !a.StartsWith("--")) ?? "100model/Fld_Ditch01.Nin_NX_NVN.szs";
@@ -585,44 +637,34 @@ class Program
     }
 
     /// <summary>
-    /// Returns true if a material name indicates a minimap material (Map*).
+    /// Returns true if a material name indicates a minimap material (Map* or Drcmap*).
     /// These use screen-space UV projection and must not be mixed with field materials.
     /// </summary>
     static bool IsMapMaterial(string name) =>
-        name.StartsWith("Map", StringComparison.OrdinalIgnoreCase);
+        name.StartsWith("Map", StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith("Drcmap", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Finds the closest known-good material within the same category (Map vs non-Map)
-    /// by counting shared shader option values. Returns null if no candidates exist.
+    /// Builds a set of program indices in the shader model that correspond to Map* (minimap)
+    /// known-good materials. Used to exclude these programs when matching non-Map materials.
     /// </summary>
-    static Dictionary<string, string> FindClosestKnownGoodByCategory(
-        string matName,
-        Dictionary<string, string> matOpts,
+    static HashSet<int> BuildMapProgramIndices(
+        ShaderModel sm,
         Dictionary<string, Dictionary<string, string>> knownGoodPool)
     {
-        bool isMap = IsMapMaterial(matName);
-        var candidates = knownGoodPool
-            .Where(kv => isMap == IsMapMaterial(kv.Key))
-            .ToList();
-
-        if (candidates.Count == 0)
-            return null;
-
-        int bestScore = -1;
-        Dictionary<string, string> bestOpts = null;
-        foreach (var candidate in candidates)
+        var mapIndices = new HashSet<int>();
+        foreach (var kv in knownGoodPool)
         {
-            int score = 0;
-            foreach (var opt in matOpts)
-                if (candidate.Value.TryGetValue(opt.Key, out var val) && val == opt.Value)
-                    score++;
-            if (score > bestScore)
+            if (!IsMapMaterial(kv.Key)) continue;
+            var sanitized = BfshaHybridBuilder.SanitizeOptions(kv.Value, sm);
+            try
             {
-                bestScore = score;
-                bestOpts = candidate.Value;
+                int idx = sm.GetProgramIndex(sanitized);
+                if (idx >= 0) mapIndices.Add(idx);
             }
+            catch { }
         }
-        return bestOpts;
+        return mapIndices;
     }
 
     /// <summary>
@@ -923,6 +965,13 @@ class Program
                         }
 
                     int tfAdapted = 0, remapped = 0;
+
+                    // Pre-compute Map* program indices for each shader model in the testfire bfsha.
+                    // Non-Map materials will exclude these programs; Map materials will only use them.
+                    var mapProgsByModel = new Dictionary<string, HashSet<int>>();
+                    foreach (var sm in hybridBfsha.ShaderModels.Values)
+                        mapProgsByModel[sm.Name] = BuildMapProgramIndices(sm, tfKnownGood);
+
                     foreach (var model in convertedBfres.Models.Values)
                         foreach (var mat in model.Materials.Values)
                         {
@@ -938,8 +987,8 @@ class Program
                                 {
                                     // Native testfire shader model → use testfire options where possible,
                                     // or find the closest program to preserve the prod material's paint type.
-                                    // Map* materials (minimap) are isolated from field materials to prevent
-                                    // screen-space UV projection from leaking into regular geometry.
+                                    // Map* programs are excluded when matching non-Map materials (and vice versa)
+                                    // to prevent minimap UV projection from leaking into field geometry.
                                     Dictionary<string, string> newOpts;
                                     if (tfKnownGood.ContainsKey(mat.Name))
                                         newOpts = tfKnownGood[mat.Name];
@@ -949,20 +998,25 @@ class Program
                                         foreach (var opt in sa.ShaderOptions)
                                             matOpts[opt.Key] = opt.Value;
 
-                                        // First try category-filtered known-good matching
-                                        newOpts = FindClosestKnownGoodByCategory(mat.Name, matOpts, tfKnownGood);
+                                        // Build exclusion set: non-Map materials exclude Map programs, Map materials exclude non-Map programs
+                                        HashSet<int> excluded = null;
+                                        if (mapProgsByModel.TryGetValue(sa.ShadingModelName, out var mapProgs) && mapProgs.Count > 0)
+                                        {
+                                            if (IsMapMaterial(mat.Name))
+                                            {
+                                                // Map material: exclude all NON-Map programs (invert the set)
+                                                excluded = new HashSet<int>(Enumerable.Range(0, tfSm.Programs.Count).Where(i => !mapProgs.Contains(i)));
+                                            }
+                                            else
+                                            {
+                                                // Non-Map material: exclude Map programs
+                                                excluded = mapProgs;
+                                            }
+                                        }
 
-                                        if (newOpts == null)
-                                        {
-                                            // No known-good in same category — fall back to FindClosestProgram
-                                            var match = BfshaHybridBuilder.FindClosestProgram(
-                                                mat.Name, sa.ShadingModelName, matOpts, tfSm);
-                                            newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, tfSm);
-                                        }
-                                        else
-                                        {
-                                            Console.WriteLine($"    '{mat.Name}': matched to category-filtered known-good (Map={IsMapMaterial(mat.Name)})");
-                                        }
+                                        var match = BfshaHybridBuilder.FindClosestProgram(
+                                            mat.Name, sa.ShadingModelName, matOpts, tfSm, excluded);
+                                        newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, tfSm);
                                     }
                                     sa.ShaderOptions.Clear();
                                     foreach (var kvp in newOpts)
@@ -998,8 +1052,8 @@ class Program
                                     // Remap to this testfire shader model
                                     sa.ShadingModelName = bestSmName;
 
-                                    // Use known-good options or find closest program
-                                    // Map* materials (minimap) are isolated from field materials.
+                                    // Use known-good options or find closest program.
+                                    // Map* programs excluded for non-Map materials (and vice versa).
                                     Dictionary<string, string> newOpts;
                                     if (tfKnownGood.ContainsKey(mat.Name))
                                         newOpts = tfKnownGood[mat.Name];
@@ -1009,20 +1063,18 @@ class Program
                                         foreach (var opt in sa.ShaderOptions)
                                             matOpts[opt.Key] = opt.Value;
 
-                                        // First try category-filtered known-good matching
-                                        newOpts = FindClosestKnownGoodByCategory(mat.Name, matOpts, tfKnownGood);
+                                        HashSet<int> excluded = null;
+                                        if (mapProgsByModel.TryGetValue(bestSmName, out var mapProgs) && mapProgs.Count > 0)
+                                        {
+                                            if (IsMapMaterial(mat.Name))
+                                                excluded = new HashSet<int>(Enumerable.Range(0, bestSm.Programs.Count).Where(i => !mapProgs.Contains(i)));
+                                            else
+                                                excluded = mapProgs;
+                                        }
 
-                                        if (newOpts == null)
-                                        {
-                                            // No known-good in same category — fall back to FindClosestProgram
-                                            var match = BfshaHybridBuilder.FindClosestProgram(
-                                                mat.Name, bestSmName, matOpts, bestSm);
-                                            newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, bestSm);
-                                        }
-                                        else
-                                        {
-                                            Console.WriteLine($"    '{mat.Name}': matched to category-filtered known-good (Map={IsMapMaterial(mat.Name)})");
-                                        }
+                                        var match = BfshaHybridBuilder.FindClosestProgram(
+                                            mat.Name, bestSmName, matOpts, bestSm, excluded);
+                                        newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, bestSm);
                                     }
                                     sa.ShaderOptions.Clear();
                                     foreach (var kvp in newOpts)

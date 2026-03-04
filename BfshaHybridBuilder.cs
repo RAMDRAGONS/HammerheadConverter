@@ -392,7 +392,7 @@ namespace HammerheadConverter
         /// - Remove options whose names don't exist in the shader model
         /// - Remove options whose values aren't valid choices in the shader model
         /// </summary>
-        private static Dictionary<string, string> SanitizeOptions(
+        public static Dictionary<string, string> SanitizeOptions(
             Dictionary<string, string> options, ShaderModel sm)
         {
             var result = new Dictionary<string, string>();
@@ -458,12 +458,14 @@ namespace HammerheadConverter
         /// <summary>
         /// Find the closest matching program by computing weighted key distance.
         /// Critical rendering options get heavy penalties to prevent changing them.
+        /// Optionally excludes specific program indices from the search (e.g. Map material programs).
         /// </summary>
         public static MatchResult FindClosestProgram(
             string materialName,
             string shaderModelName,
             Dictionary<string, string> materialOptions,
-            ShaderModel sm)
+            ShaderModel sm,
+            HashSet<int> excludedPrograms = null)
         {
             // Sanitize options first to remove invalid choice values
             var cleanOptions = SanitizeOptions(materialOptions, sm);
@@ -494,6 +496,9 @@ namespace HammerheadConverter
 
             for (int i = 0; i < sm.Programs.Count; i++)
             {
+                if (excludedPrograms != null && excludedPrograms.Contains(i))
+                    continue;
+
                 int distance = 0;
                 int baseIdx = numKeysPerProgram * i;
 
