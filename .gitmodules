@@ -13,3 +13,6 @@
 [submodule "include/LayoutLibrary"]
 	path = include/LayoutLibrary
 	url = https://github.com/KillzXGaming/LayoutLibrary.git
+[submodule "include/KCollisionLibrary"]
+	path = include/KCollisionLibrary
+	url = https://github.com/KillzXGaming/KCollisionLibrary.git

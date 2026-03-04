@@ -311,6 +311,7 @@ class Program
         string outputDir = null;
         string batchSzsDir = null;
         string refSzsPath = null;
+        bool mergeAB = args.Contains("--merge-ab");
 
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -380,7 +381,7 @@ class Program
         try
         {
             if (batchMode)
-                return RunBatchSzsMode(batchSzsDir, refSzsPath, shadictPath, outputDir);
+                return RunBatchSzsMode(batchSzsDir, refSzsPath, shadictPath, outputDir, mergeAB);
             else if (hybridMode)
                 return RunHybridMode(prodBfresPath, testfireBfresPath, testfireBfshaPath, shadictPath, outputDir);
             else
@@ -672,12 +673,14 @@ class Program
     /// Uses a reference testfire SZS for bfres version template.
     /// The prod bfsha is downgraded V7→V5 to keep all original shader programs.
     /// </summary>
-    static int RunBatchSzsMode(string inputDir, string refSzsPath, string shadictPath, string outputDir)
+    static int RunBatchSzsMode(string inputDir, string refSzsPath, string shadictPath, string outputDir, bool mergeAB = false)
     {
         Console.WriteLine("\n=== BATCH SZS MODE ===");
         Console.WriteLine($"Input directory:  {inputDir}");
         Console.WriteLine($"Reference SZS:    {refSzsPath}");
-        Console.WriteLine($"Output directory:  {outputDir}\n");
+        Console.WriteLine($"Output directory:  {outputDir}");
+        if (mergeAB) Console.WriteLine("  A/B merge:       ENABLED");
+        Console.WriteLine();
 
         // Load reference SZS once — we only need the bfres for version template
         Console.WriteLine("Loading reference SZS...");
@@ -891,6 +894,17 @@ class Program
                     File.Copy(szsFile, Path.Combine(outputDir, szsName), overwrite: true);
                     skipped++;
                     continue;
+                }
+
+                // ═══════════════════════════════════════════════════════════════════════
+                // A/B Merge: Merge duplicate A/B models and KCL files
+                // ═══════════════════════════════════════════════════════════════════════
+                if (mergeAB)
+                {
+                    var mergedModels = ABMerger.MergeModelsAB(convertedBfres);
+                    var mergedKcls = ABMerger.MergeKclAB(outputFiles);
+                    if (mergedModels.Count > 0 || mergedKcls.Count > 0)
+                        Console.WriteLine($"    AB merge: {mergedModels.Count} model pairs, {mergedKcls.Count} KCL pairs merged");
                 }
 
                 // ═══════════════════════════════════════════════════════════════════════
