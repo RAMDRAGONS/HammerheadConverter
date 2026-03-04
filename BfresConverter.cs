@@ -71,9 +71,12 @@ public static class BfresConverter
         Console.WriteLine($"  Output: {output.Models.Count} models, " +
             $"Major2={output.VersionMajor2}, Minor={output.VersionMinor}");
 
-        // CRITICAL: Reset the static BufferOffset in BufferInfo.
+        // Reset the static BufferOffset in BufferInfo.
         // BfresLibrary uses this static field during Save to track global buffer position.
-        // When batching, it must be reset to 0 for each new file.
+        // WARNING: This is a STATIC field on the BufferInfo class. ANY subsequent
+        // ResFile load (new ResFile(...)) will overwrite it via BufferInfo.Load().
+        // Callers MUST reset BufferInfo.BufferOffset = 0 again immediately before
+        // calling Save() if they load any ResFile instances after this point.
         BufferInfo.BufferOffset = 0;
 
         return output;

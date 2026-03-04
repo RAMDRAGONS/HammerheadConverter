@@ -47,6 +47,13 @@ class Program
         if (args.Contains("--paint-diag"))
             return RunPaintDiag(args.Where(a => a != "--paint-diag").ToArray());
 
+        if (args.Contains("--roundtrip-test"))
+        {
+            var rest = args.Where(a => a != "--roundtrip-test").ToArray();
+            if (rest.Length < 1) { Console.Error.WriteLine("Usage: --roundtrip-test input.szs"); return 1; }
+            return RunRoundTripTest(rest[0]);
+        }
+
         if (args.Contains("--bars-build"))
             return RunBarsBuild(args.Where(a => a != "--bars-build").ToArray());
 
@@ -387,6 +394,9 @@ class Program
 
         // Save adapted bfres
         string outputBfresPath = Path.Combine(outputDir, Path.GetFileName(prodBfresPath));
+        // CRITICAL: Reset static BufferOffset right before Save. Any ResFile load
+        // between Convert() and here will have overwritten this static field.
+        BufferInfo.BufferOffset = 0;
         convertedBfres.Save(outputBfresPath);
         Console.WriteLine($"\nSaved adapted bfres: {outputBfresPath}");
 
@@ -445,6 +455,8 @@ class Program
             var convertedBfres = BfresConverter.Convert(prodBfres, testfireBfres);
 
             string outputBfresPath = Path.Combine(outputDir, Path.GetFileName(prodBfresPath));
+            // CRITICAL: Reset static BufferOffset right before Save.
+            BufferInfo.BufferOffset = 0;
             convertedBfres.Save(outputBfresPath);
             Console.WriteLine($"\nSaved converted bfres: {outputBfresPath}");
 
@@ -1203,6 +1215,10 @@ class Program
 
 
                 using var bfresMs = new MemoryStream();
+                // CRITICAL: Reset static BufferOffset right before Save.
+                // Loading refBfresLocal2 (line ~825) for shader material adaptation
+                // overwrites this static field, corrupting buffer offset calculations.
+                BufferInfo.BufferOffset = 0;
                 convertedBfres.Save(bfresMs);
                 var bfresKey = sarcFiles.Keys.First(k => Path.GetExtension(k).Equals(".bfres", StringComparison.OrdinalIgnoreCase));
                 outputFiles[bfresKey] = bfresMs.ToArray();
@@ -2613,5 +2629,126 @@ Examples:
         {
             Console.WriteLine("  [Deli] WARNING: DeliTextures.Nin_NX_NVN.szs not found");
         }
+    }
+
+    static int RunRoundTripTest(string szsPath)
+    {
+        Console.WriteLine($"=== BfresLibrary V5 Round-Trip Test ===");
+        Console.WriteLine($"Input: {Path.GetFileName(szsPath)}");
+        
+        byte[] dec = Oead.Yaz0DecompressFile(szsPath);
+        var sarc = Oead.SarcRead(dec);
+        byte[] origBfres = null;
+        string bfresName = null;
+        foreach (var f in sarc)
+        {
+            if (f.Key.EndsWith(".bfres")) { origBfres = f.Value; bfresName = f.Key; break; }
+        }
+        if (origBfres == null) { Console.Error.WriteLine("No .bfres found in SZS"); return 1; }
+        
+        Console.WriteLine($"BFRES: {bfresName}, {origBfres.Length} bytes, ver={origBfres[10]}.{origBfres[8]}.{origBfres[9]}.{origBfres[11]}");
+        
+        // Load
+        BufferInfo.BufferOffset = 0;
+        var resFile = new ResFile(new MemoryStream(origBfres));
+        Console.WriteLine($"Loaded: {resFile.Models.Count} models, name='{resFile.Name}'");
+        foreach (var m in resFile.Models)
+            Console.WriteLine($"  '{m.Key}': {m.Value.Shapes.Count}sh {m.Value.Materials.Count}mat {m.Value.VertexBuffers.Count}vb {m.Value.Skeleton.Bones.Count}bone");
+        
+        // Save
+        BufferInfo.BufferOffset = 0;
+        var ms = new MemoryStream();
+        resFile.Save(ms);
+        byte[] savedBfres = ms.ToArray();
+        Console.WriteLine($"\nSaved: {savedBfres.Length} bytes (diff: {savedBfres.Length - origBfres.Length})");
+        
+        // Also dump saved to /tmp for analysis
+        File.WriteAllBytes("/tmp/roundtrip_saved.bfres", savedBfres);
+        File.WriteAllBytes("/tmp/roundtrip_orig.bfres", origBfres);
+        Console.WriteLine("Wrote /tmp/roundtrip_orig.bfres and /tmp/roundtrip_saved.bfres");
+        
+        // Compare section-by-section
+        var magics = new[] { "FMDL", "FSHP", "FMAT", "FVTX", "FSKL" };
+        var strides = new[] { 120, 112, 184, 96, -1 };
+        
+        for (int mi = 0; mi < magics.Length; mi++)
+        {
+            var mb = System.Text.Encoding.ASCII.GetBytes(magics[mi]);
+            var origOff = FindAllMagic(origBfres, mb);
+            var savedOff = FindAllMagic(savedBfres, mb);
+            
+            string countSt = origOff.Count == savedOff.Count ? "✓" : "*** COUNT MISMATCH ***";
+            Console.WriteLine($"\n{magics[mi]}: orig={origOff.Count} saved={savedOff.Count} {countSt}");
+            
+            if (strides[mi] > 0 && origOff.Count >= 2 && savedOff.Count >= 2)
+            {
+                // Check if entries within the same model are consecutive
+                int os = origOff[1] - origOff[0], ss = savedOff[1] - savedOff[0];
+                if (os < 1000 && ss < 1000) // Only if they're in the same model
+                {
+                    Console.WriteLine($"  Stride: orig={os} saved={ss} {(os == ss ? "✓" : "*** STRIDE MISMATCH ***")}");
+                }
+            }
+
+            // Compare first entry byte-by-byte
+            int sz = strides[mi] > 0 ? strides[mi] : 64;
+            int cnt = Math.Min(2, Math.Min(origOff.Count, savedOff.Count));
+            for (int i = 0; i < cnt; i++)
+            {
+                int diffs = 0;
+                for (int j = 0; j < sz && origOff[i]+j < origBfres.Length && savedOff[i]+j < savedBfres.Length; j++)
+                    if (origBfres[origOff[i]+j] != savedBfres[savedOff[i]+j]) diffs++;
+                
+                if (diffs > 0)
+                {
+                    Console.WriteLine($"  [{i}]: {diffs} diffs");
+                    int shown = 0;
+                    for (int j = 0; j < sz && shown < 8 && origOff[i]+j < origBfres.Length && savedOff[i]+j < savedBfres.Length; j++)
+                    {
+                        if (origBfres[origOff[i]+j] != savedBfres[savedOff[i]+j])
+                        {
+                            Console.WriteLine($"    +0x{j:X2}: orig=0x{origBfres[origOff[i]+j]:X2} saved=0x{savedBfres[savedOff[i]+j]:X2}");
+                            shown++;
+                        }
+                    }
+                }
+                else Console.WriteLine($"  [{i}]: identical ✓");
+            }
+        }
+        
+        // RLT comparison
+        uint origRlt = BitConverter.ToUInt32(origBfres, 0x18);
+        uint savedRlt = BitConverter.ToUInt32(savedBfres, 0x18);
+        Console.WriteLine($"\nRLT: orig=0x{origRlt:X} saved=0x{savedRlt:X}");
+        
+        for (int s = 0; s < 5; s++)
+        {
+            int ob = (int)origRlt + 16 + s * 24;
+            int sb = (int)savedRlt + 16 + s * 24;
+            if (ob + 24 > origBfres.Length || sb + 24 > savedBfres.Length) break;
+            
+            uint oo = BitConverter.ToUInt32(origBfres, ob + 8), osz = BitConverter.ToUInt32(origBfres, ob + 12);
+            uint oei = BitConverter.ToUInt32(origBfres, ob + 16), oec = BitConverter.ToUInt32(origBfres, ob + 20);
+            uint so = BitConverter.ToUInt32(savedBfres, sb + 8), ssz = BitConverter.ToUInt32(savedBfres, sb + 12);
+            uint sei = BitConverter.ToUInt32(savedBfres, sb + 16), sec = BitConverter.ToUInt32(savedBfres, sb + 20);
+            
+            bool match = oo == so && osz == ssz && oei == sei && oec == sec;
+            Console.WriteLine($"  Sec{s}: {(match ? "✓" : "***DIFF***")}  orig(off=0x{oo:X} sz=0x{osz:X} ei={oei} ent={oec})  saved(off=0x{so:X} sz=0x{ssz:X} ei={sei} ent={sec})");
+        }
+        
+        Console.WriteLine("\nDone.");
+        return 0;
+    }
+    
+    static List<int> FindAllMagic(byte[] data, byte[] magic)
+    {
+        var results = new List<int>();
+        for (int i = 0; i <= data.Length - magic.Length; i++)
+        {
+            bool ok = true;
+            for (int j = 0; j < magic.Length; j++) { if (data[i+j] != magic[j]) { ok = false; break; } }
+            if (ok) results.Add(i);
+        }
+        return results;
     }
 }
