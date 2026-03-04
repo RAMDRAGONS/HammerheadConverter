@@ -47,6 +47,42 @@ class Program
         if (args.Contains("--paint-diag"))
             return RunPaintDiag(args.Where(a => a != "--paint-diag").ToArray());
 
+        if (args.Contains("--compare-kcl"))
+        {
+            var rest = args.Where(a => a != "--compare-kcl").ToArray();
+            if (rest.Length < 2) { Console.Error.WriteLine("Usage: --compare-kcl testfire.szs prod.szs"); return 1; }
+            Console.WriteLine("=== KCL Comparison ===");
+            foreach (var (label, path) in new[] { ("Testfire", rest[0]), ("Prod", rest[1]) })
+            {
+                Console.WriteLine($"\n--- {label}: {Path.GetFileName(path)} ---");
+                byte[] dec = Oead.Yaz0DecompressFile(path);
+                var files = Oead.SarcRead(dec);
+                foreach (var f in files.OrderBy(x => x.Key))
+                {
+                    string ext = Path.GetExtension(f.Key).ToLowerInvariant();
+                    Console.WriteLine($"  {f.Key} ({f.Value.Length} bytes)");
+                    if (ext == ".kcl" && f.Value.Length >= 64)
+                    {
+                        Console.Write("    Header[0..63]: ");
+                        for (int i = 0; i < 64; i++) Console.Write($"{f.Value[i]:X2} ");
+                        Console.WriteLine();
+                        // KCL header offsets
+                        uint off0 = BitConverter.ToUInt32(f.Value, 0);
+                        uint off1 = BitConverter.ToUInt32(f.Value, 4);
+                        uint off2 = BitConverter.ToUInt32(f.Value, 8);
+                        uint off3 = BitConverter.ToUInt32(f.Value, 12);
+                        Console.WriteLine($"    Offsets: 0x{off0:X} 0x{off1:X} 0x{off2:X} 0x{off3:X}");
+                        // Check for V2 header (starts with 02020000)
+                        if (f.Value[0] == 0x02 && f.Value[1] == 0x02)
+                            Console.WriteLine("    Version: V2 (has version header)");
+                        else
+                            Console.WriteLine("    Version: V1 (no version header, starts with offsets)");
+                    }
+                }
+            }
+            return 0;
+        }
+
         if (args.Contains("--roundtrip-test"))
         {
             var rest = args.Where(a => a != "--roundtrip-test").ToArray();
@@ -545,8 +581,48 @@ class Program
                     Console.WriteLine($"    {line.Trim()}");
             }
         }
-
         return 0;
+    }
+
+    /// <summary>
+    /// Returns true if a material name indicates a minimap material (Map*).
+    /// These use screen-space UV projection and must not be mixed with field materials.
+    /// </summary>
+    static bool IsMapMaterial(string name) =>
+        name.StartsWith("Map", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Finds the closest known-good material within the same category (Map vs non-Map)
+    /// by counting shared shader option values. Returns null if no candidates exist.
+    /// </summary>
+    static Dictionary<string, string> FindClosestKnownGoodByCategory(
+        string matName,
+        Dictionary<string, string> matOpts,
+        Dictionary<string, Dictionary<string, string>> knownGoodPool)
+    {
+        bool isMap = IsMapMaterial(matName);
+        var candidates = knownGoodPool
+            .Where(kv => isMap == IsMapMaterial(kv.Key))
+            .ToList();
+
+        if (candidates.Count == 0)
+            return null;
+
+        int bestScore = -1;
+        Dictionary<string, string> bestOpts = null;
+        foreach (var candidate in candidates)
+        {
+            int score = 0;
+            foreach (var opt in matOpts)
+                if (candidate.Value.TryGetValue(opt.Key, out var val) && val == opt.Value)
+                    score++;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestOpts = candidate.Value;
+            }
+        }
+        return bestOpts;
     }
 
     /// <summary>
@@ -862,19 +938,31 @@ class Program
                                 {
                                     // Native testfire shader model → use testfire options where possible,
                                     // or find the closest program to preserve the prod material's paint type.
+                                    // Map* materials (minimap) are isolated from field materials to prevent
+                                    // screen-space UV projection from leaking into regular geometry.
                                     Dictionary<string, string> newOpts;
                                     if (tfKnownGood.ContainsKey(mat.Name))
                                         newOpts = tfKnownGood[mat.Name];
                                     else
                                     {
-                                        // Use original options to find the best matching testfire program
                                         var matOpts = new Dictionary<string, string>();
                                         foreach (var opt in sa.ShaderOptions)
                                             matOpts[opt.Key] = opt.Value;
-                                        
-                                        var match = BfshaHybridBuilder.FindClosestProgram(
-                                            mat.Name, sa.ShadingModelName, matOpts, tfSm);
-                                        newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, tfSm);
+
+                                        // First try category-filtered known-good matching
+                                        newOpts = FindClosestKnownGoodByCategory(mat.Name, matOpts, tfKnownGood);
+
+                                        if (newOpts == null)
+                                        {
+                                            // No known-good in same category — fall back to FindClosestProgram
+                                            var match = BfshaHybridBuilder.FindClosestProgram(
+                                                mat.Name, sa.ShadingModelName, matOpts, tfSm);
+                                            newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, tfSm);
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine($"    '{mat.Name}': matched to category-filtered known-good (Map={IsMapMaterial(mat.Name)})");
+                                        }
                                     }
                                     sa.ShaderOptions.Clear();
                                     foreach (var kvp in newOpts)
@@ -911,18 +999,30 @@ class Program
                                     sa.ShadingModelName = bestSmName;
 
                                     // Use known-good options or find closest program
+                                    // Map* materials (minimap) are isolated from field materials.
                                     Dictionary<string, string> newOpts;
                                     if (tfKnownGood.ContainsKey(mat.Name))
                                         newOpts = tfKnownGood[mat.Name];
                                     else
                                     {
-                                        // Build options and find closest program via hybrid builder
                                         var matOpts = new Dictionary<string, string>();
                                         foreach (var opt in sa.ShaderOptions)
                                             matOpts[opt.Key] = opt.Value;
-                                        var match = BfshaHybridBuilder.FindClosestProgram(
-                                            mat.Name, bestSmName, matOpts, bestSm);
-                                        newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, bestSm);
+
+                                        // First try category-filtered known-good matching
+                                        newOpts = FindClosestKnownGoodByCategory(mat.Name, matOpts, tfKnownGood);
+
+                                        if (newOpts == null)
+                                        {
+                                            // No known-good in same category — fall back to FindClosestProgram
+                                            var match = BfshaHybridBuilder.FindClosestProgram(
+                                                mat.Name, bestSmName, matOpts, bestSm);
+                                            newOpts = match.AdaptedOptions ?? BfshaHybridBuilder.StripProdOnlyOptions(matOpts, bestSm);
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine($"    '{mat.Name}': matched to category-filtered known-good (Map={IsMapMaterial(mat.Name)})");
+                                        }
                                     }
                                     sa.ShaderOptions.Clear();
                                     foreach (var kvp in newOpts)
