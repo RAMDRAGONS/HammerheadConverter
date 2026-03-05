@@ -939,8 +939,67 @@ class Program
                     try { testfireRef = new BfshaFile(new MemoryStream(refBfshaEntry.Value)); }
                     catch { }
 
+                    // Check if all prod shader models have a matching reference.
+                    // If not, search shadict for additional testfire bfsha files that do.
+                    var additionalRefs = new List<BfshaFile>();
+                    if (testfireRef != null && shadictPath != null)
+                    {
+                        foreach (var sm in hybridBfsha.ShaderModels.Values)
+                        {
+                            bool found = false;
+                            foreach (var tsm in testfireRef.ShaderModels.Values)
+                            {
+                                if (tsm.Name == sm.Name || tsm.Name == sm.Name + "_np" || sm.Name == tsm.Name + "_np")
+                                { found = true; break; }
+                            }
+                            // Also check already-loaded additional refs
+                            if (!found)
+                            {
+                                foreach (var addRef in additionalRefs)
+                                    foreach (var tsm in addRef.ShaderModels.Values)
+                                    {
+                                        if (tsm.Name == sm.Name || tsm.Name == sm.Name + "_np" || sm.Name == tsm.Name + "_np")
+                                        { found = true; break; }
+                                        if (found) break;
+                                    }
+                            }
+                            if (!found)
+                            {
+                                // Search shadict for a testfire bfsha containing a matching model
+                                // Strip _np suffix for search: blitz_uber_obj_np → blitz_uber_obj
+                                string searchName = sm.Name.EndsWith("_np") ? sm.Name.Substring(0, sm.Name.Length - 3) : sm.Name;
+                                foreach (var shadictFile in Directory.GetFiles(shadictPath, "*.szs"))
+                                {
+                                    try
+                                    {
+                                        var shadictDecomp = Oead.Yaz0DecompressFile(shadictFile);
+                                        var shadictSarc = Oead.SarcRead(shadictDecomp);
+                                        var bfshaEntry = shadictSarc.FirstOrDefault(kv =>
+                                            Path.GetExtension(kv.Key).Equals(".bfsha", StringComparison.OrdinalIgnoreCase));
+                                        if (bfshaEntry.Key == null) continue;
+                                        var shadictBfsha = new BfshaFile(new MemoryStream(bfshaEntry.Value));
+                                        bool hasMatch = false;
+                                        foreach (var tsm in shadictBfsha.ShaderModels.Values)
+                                        {
+                                            if (tsm.Name == sm.Name || tsm.Name == searchName || 
+                                                tsm.Name == sm.Name + "_np" || sm.Name == tsm.Name + "_np")
+                                            { hasMatch = true; break; }
+                                        }
+                                        if (hasMatch)
+                                        {
+                                            Console.WriteLine($"  Found shadict reference for [{sm.Name}]: {Path.GetFileName(shadictFile)}");
+                                            additionalRefs.Add(shadictBfsha);
+                                            break;
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            }
+                        }
+                    }
+
                     // Adapt prod bfsha metadata for testfire
-                    ShaderTransplant.AdaptForTestfire(hybridBfsha, testfireRef);
+                    ShaderTransplant.AdaptForTestfire(hybridBfsha, testfireRef, additionalRefs);
                 }
                 else if (useTestfireBfsha)
                 {
@@ -1315,20 +1374,19 @@ class Program
                         // Brute-force fallback: try all gsys_renderstate values (0-3).
                         // The game resolves this dynamically per render pass, so the
                         // material stores a default that doesn't match any compiled program.
-                        if (sa.ShaderOptions.ContainsKey("gsys_renderstate"))
+                        if (matOpts.ContainsKey("gsys_renderstate"))
                         {
-                            string origRs = sa.ShaderOptions["gsys_renderstate"];
+                            var testOpts = new Dictionary<string, string>(matOpts);
                             for (int rs = 0; rs <= 3; rs++)
                             {
                                 string rsStr = rs.ToString();
-                                sa.ShaderOptions["gsys_renderstate"] = rsStr;
-                                matOpts["gsys_renderstate"] = rsStr;
+                                testOpts["gsys_renderstate"] = rsStr;
 
                                 // Also try toggling gsys_alpha_test_enable with each renderstate
                                 string[] alphaVals;
-                                if (sa.ShaderOptions.ContainsKey("gsys_alpha_test_enable"))
+                                if (testOpts.ContainsKey("gsys_alpha_test_enable"))
                                 {
-                                    string curAlpha = sa.ShaderOptions["gsys_alpha_test_enable"];
+                                    string curAlpha = matOpts["gsys_alpha_test_enable"];
                                     alphaVals = new string[] { curAlpha, curAlpha == "0" ? "1" : "0" };
                                 }
                                 else
@@ -1336,27 +1394,21 @@ class Program
 
                                 foreach (var av in alphaVals)
                                 {
-                                    if (av != "" && sa.ShaderOptions.ContainsKey("gsys_alpha_test_enable"))
-                                    {
-                                        sa.ShaderOptions["gsys_alpha_test_enable"] = av;
-                                        matOpts["gsys_alpha_test_enable"] = av;
-                                    }
+                                    if (av != "" && testOpts.ContainsKey("gsys_alpha_test_enable"))
+                                        testOpts["gsys_alpha_test_enable"] = av;
 
-                                    try { progIdx = tfSm.GetProgramIndex(matOpts); } catch { progIdx = -1; }
+                                    try { progIdx = tfSm.GetProgramIndex(testOpts); } catch { progIdx = -1; }
                                     if (progIdx >= 0)
                                     {
                                         lookupOk++;
                                         riFixed++;
-                                        Console.WriteLine($"    FIXED {mat.Name}: gsys_renderstate={rsStr}" +
+                                        Console.WriteLine($"    VALIDATED {mat.Name}: gsys_renderstate={rsStr}" +
                                             (av != "" ? $", alpha_test={av}" : "") +
-                                            $" → program {progIdx}");
+                                            $" → program {progIdx} (material options unchanged)");
                                         goto nextMaterial;
                                     }
                                 }
                             }
-                            // Revert if nothing worked
-                            sa.ShaderOptions["gsys_renderstate"] = origRs;
-                            matOpts["gsys_renderstate"] = origRs;
                         }
                         // Last resort: find closest matching program via weighted key distance
                         var closestMatch = BfshaHybridBuilder.FindClosestProgram(

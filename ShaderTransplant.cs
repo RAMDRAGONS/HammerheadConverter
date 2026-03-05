@@ -33,7 +33,7 @@ public static class ShaderTransplant
     /// Adapt a prod bfsha (already V5-downgraded) for testfire.
     /// Modifies shader model metadata in-place. Preserves all GPU bytecode and bindings.
     /// </summary>
-    public static void AdaptForTestfire(BfshaFile prodBfsha, BfshaFile testfireBfsha = null)
+    public static void AdaptForTestfire(BfshaFile prodBfsha, BfshaFile testfireBfsha = null, List<BfshaFile> additionalRefs = null)
     {
         Console.WriteLine("=== Shader Transplant: Adapting prod bfsha for testfire ===");
 
@@ -43,21 +43,24 @@ public static class ShaderTransplant
             Console.WriteLine($"  [{sm.Name}] {sm.Programs.Count} programs");
 
             // Find matching testfire shader model for reference
-            ShaderModel refSm = null;
-            if (testfireBfsha != null)
+            ShaderModel refSm = FindMatchingTestfireModel(sm.Name, testfireBfsha);
+
+            // If primary ref doesn't have a match, check additional refs (from shadict)
+            if (refSm == null && additionalRefs != null)
             {
-                foreach (var tsm in testfireBfsha.ShaderModels.Values)
+                foreach (var addRef in additionalRefs)
                 {
-                    if (tsm.Name == sm.Name || tsm.Name == sm.Name + "_np" || sm.Name == tsm.Name + "_np")
+                    refSm = FindMatchingTestfireModel(sm.Name, addRef);
+                    if (refSm != null)
                     {
-                        refSm = tsm;
+                        Console.WriteLine($"    Using shadict reference: [{refSm.Name}]");
                         break;
                     }
                 }
             }
 
             AdaptSamplers(sm);
-            AdaptUniformBlockSizes(sm);
+            AdaptUniformBlockSizes(sm, refSm);
             AdaptStaticOptions(sm, refSm);
             
             // Copy paint-critical metadata flags from testfire if available.
@@ -74,11 +77,27 @@ public static class ShaderTransplant
             }
             else
             {
+                Console.WriteLine($"    ⚠ No testfire reference — skipping option adaptation");
                 Console.WriteLine($"    Adapted: samplers, UB sizes (no refSm for metadata)");
             }
         }
 
         Console.WriteLine("=== Shader Transplant complete ===");
+    }
+
+    /// <summary>
+    /// Find a testfire shader model matching the given prod name.
+    /// Matches by exact name, or with _np suffix (prod adds _np for no-paint variants).
+    /// </summary>
+    private static ShaderModel FindMatchingTestfireModel(string prodName, BfshaFile testfireBfsha)
+    {
+        if (testfireBfsha == null) return null;
+        foreach (var tsm in testfireBfsha.ShaderModels.Values)
+        {
+            if (tsm.Name == prodName || tsm.Name == prodName + "_np" || prodName == tsm.Name + "_np")
+                return tsm;
+        }
+        return null;
     }
 
     private static void AdaptScalarMetadata(ShaderModel sm, ShaderModel refSm)
@@ -142,8 +161,12 @@ public static class ShaderTransplant
     /// so the runtime fills paint data in the correct layout.
     /// gsys_material uses MAX(prod, testfire) since prod bytecode reads
     /// material params at prod-sized offsets.
+    ///
+    /// IMPORTANT: Paint UBs are only resized when we have a testfire reference
+    /// model (refSm != null). Without a reference, the prod bytecode expects
+    /// original sizes — shrinking them causes out-of-bounds GPU reads.
     /// </summary>
-    private static void AdaptUniformBlockSizes(ShaderModel sm)
+    private static void AdaptUniformBlockSizes(ShaderModel sm, ShaderModel refSm)
     {
         // Paint-related UBs that must use exact testfire size for runtime compat
         var paintUBs = new HashSet<string> { "gsys_user0", "gsys_user2" };
@@ -157,7 +180,13 @@ public static class ShaderTransplant
                 
                 if (paintUBs.Contains(blockSize.Key))
                 {
-                    // Paint UBs: exact testfire size for correct runtime data layout
+                    // Paint UBs: only force testfire size when we have a reference.
+                    // Without a reference, the prod bytecode expects original sizes.
+                    if (refSm == null)
+                    {
+                        Console.WriteLine($"    UB {blockSize.Key}: keeping prod size {origSize} (no testfire reference)");
+                        continue;
+                    }
                     ub.header.Size = (ushort)blockSize.Value;
                     if (origSize != ub.header.Size)
                         Console.WriteLine($"    UB {blockSize.Key}: {origSize} → {ub.header.Size} (testfire exact)");
